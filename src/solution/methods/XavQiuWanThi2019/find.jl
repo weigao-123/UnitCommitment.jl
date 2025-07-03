@@ -84,10 +84,13 @@ function _find_violations(;
         ) for t in 1:T
     )
 
+    is_vulnerable_idxes::Array{Int} = [l.offset for c in sc.contingencies for l in c.lines]
+    VL = length(is_vulnerable_idxes)
+
     pre_flow::Array{Float64} = zeros(L, K)           # pre_flow[lm, thread]
-    post_flow::Array{Float64} = zeros(L, L, K)       # post_flow[lm, lc, thread]
+    post_flow::Array{Float64} = zeros(L, VL, K)       # post_flow[lm, lc, thread]
     pre_v::Array{Float64} = zeros(L, K)              # pre_v[lm, thread]
-    post_v::Array{Float64} = zeros(L, L, K)          # post_v[lm, lc, thread]
+    post_v::Array{Float64} = zeros(L, VL, K)          # post_v[lm, lc, thread]
 
     normal_limits::Array{Float64,2} = [
         l.normal_flow_limit[t] + overflow[l.offset, t] for l in sc.lines,
@@ -99,22 +102,11 @@ function _find_violations(;
         t in 1:T
     ]
 
-    is_vulnerable::Array{Bool} = zeros(Bool, L)
-    for c in sc.contingencies
-        is_vulnerable[c.lines[1].offset] = true
-    end
-
     @threads for t in 1:T
         k = threadid()
 
         # Pre-contingency flows
         pre_flow[:, k] = isf * net_injections[:, t]
-
-        # Post-contingency flows
-        for lc in 1:L, lm in 1:L
-            post_flow[lm, lc, k] =
-                pre_flow[lm, k] + pre_flow[lc, k] * lodf[lm, lc]
-        end
 
         # Pre-contingency violations
         for lm in 1:L
@@ -122,15 +114,6 @@ function _find_violations(;
                 0.0,
                 pre_flow[lm, k] - normal_limits[lm, t],
                 -pre_flow[lm, k] - normal_limits[lm, t],
-            )
-        end
-
-        # Post-contingency violations
-        for lc in 1:L, lm in 1:L
-            post_v[lm, lc, k] = max(
-                0.0,
-                post_flow[lm, lc, k] - emergency_limits[lm, t],
-                -post_flow[lm, lc, k] - emergency_limits[lm, t],
             )
         end
 
@@ -149,15 +132,30 @@ function _find_violations(;
             end
         end
 
+        # Post-contingency flows
+        for lc in 1:VL, lm in 1:L
+            post_flow[lm, lc, k] =
+                pre_flow[lm, k] + pre_flow[is_vulnerable_idxes[lc], k] * lodf[lm, is_vulnerable_idxes[lc]]
+        end
+
+        # Post-contingency violations
+        for lc in 1:VL, lm in 1:L
+            post_v[lm, lc, k] = max(
+                0.0,
+                post_flow[lm, lc, k] - emergency_limits[lm, t],
+                -post_flow[lm, lc, k] - emergency_limits[lm, t],
+            )
+        end
+
         # Offer post-contingency violations
-        for lm in 1:L, lc in 1:L
-            if post_v[lm, lc, k] > 1e-5 && is_vulnerable[lc]
+        for lm in 1:L, lc in 1:VL
+            if post_v[lm, lc, k] > 1e-5
                 _offer(
                     filters[t],
                     _Violation(
                         time = t,
                         monitored_line = sc.lines[lm],
-                        outage_line = sc.lines[lc],
+                        outage_line = sc.lines[is_vulnerable_idxes[lc]],
                         amount = post_v[lm, lc, k],
                     ),
                 )
