@@ -148,7 +148,7 @@ function _find_violations(;
         end
 
         # Offer post-contingency violations
-        for lm in 1:L, lc in 1:VL
+        for lc in 1:VL, lm in 1:L
             if post_v[lm, lc, k] > 1e-5
                 _offer(
                     filters[t],
